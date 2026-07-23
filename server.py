@@ -1,4 +1,3 @@
-import socket
 # def get_lines(file_obj):
 #     buffer = b""
 #     while True:
@@ -21,6 +20,13 @@ import socket
 
 
 import socket
+import subprocess
+
+status_codes = {
+    200: "200 OK",
+    404: "404 NOT FOUND",
+    400: "400 BAD REQUEST"
+}
 
 def get_lines(client_sock):
     buffer = b""
@@ -38,7 +44,6 @@ def get_lines(client_sock):
 def parse_http_request(client_sock):
     line_generator = get_lines(client_sock)
     
-    # First call: Grab and validate the Request Line
     try:
         request_line = next(line_generator).decode('utf-8')
     except StopIteration:
@@ -50,12 +55,9 @@ def parse_http_request(client_sock):
         
     method, path, version = parts
     
-    # Second call onwards: Loop through and collect headers
     headers = {}
     for line in line_generator:
         line_str = line.decode('utf-8')
-        
-        # Stopping when hit the empty line delimiter (\r\n\r\n)
         if line_str == "":
             break
             
@@ -64,6 +66,22 @@ def parse_http_request(client_sock):
             headers[key.strip().lower()] = val.strip()
             
     return method, path, version, headers
+
+
+def send_response(version, status_code_str, content_type, body_text):
+    body_bytes = body_text.encode('utf-8')
+    
+    status_line = f"HTTP/1.1 {status_code_str}\r\n"
+    response_headers = (
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body_bytes)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+
+    # Return raw bytes for status line + headers + body
+    return status_line.encode('utf-8') + response_headers.encode('utf-8') + body_bytes
+
 
 # Runtime listener
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -82,9 +100,42 @@ try:
             print(f" SUCCESS: Parsed successfully!")
             print(f"   -> Method:  {method}")
             print(f"   -> Path:    {path}")
-            print(f"   -> Headers: {headers}")
+
+            # Routing predefined paths
+            if path == "/hello.server":
+                # 2. Run hello.py externally and capture its output!
+                try:
+                    result = subprocess.run(
+                        ["python", "hello.py"], 
+                        capture_output=True, 
+                        text=True, 
+                        check=True
+                    )
+                    hello_output = result.stdout
+                    response_bytes = send_response(version, status_codes[200], "text/plain", hello_output)
+                except Exception as e:
+                    error_msg = f"Failed to execute script: {e}"
+                    response_bytes = send_response(version, status_codes[500], "text/plain", error_msg)
+
+            elif path == "/index.html":
+                # Read directly from index.html file!
+                try:
+                    with open("index.html", "r", encoding="utf-8") as f:
+                        html_content = f.read()
+                    response_bytes = send_response(version,status_codes[200], "text/html", html_content)
+                except FileNotFoundError:
+                    response_bytes = send_response(version, status_codes[404], "text/html", "<h1>404 File Not Found</h1>")
+
+            else:
+                response_bytes = send_response(version,status_codes[404], "text/html", "<h1>404 Page Not Found</h1>")
+
+            # Always send response back to socket
+            client_socket.sendall(response_bytes)
+
         except ValueError as err:
             print(f" VALIDATION FAILED: {err}")
+            err_response = send_response(status_codes[400], "text/html", f"<h1>400 Bad Request</h1><p>{err}</p>")
+            client_socket.sendall(err_response)
             
         client_socket.close()
 
