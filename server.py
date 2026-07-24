@@ -21,6 +21,8 @@
 
 import socket
 import subprocess
+import threading
+import time
 
 status_codes = {
     200: "200 OK",
@@ -82,6 +84,61 @@ def send_response(version, status_code_str, content_type, body_text):
     # Return raw bytes for status line + headers + body
     return status_line.encode('utf-8') + response_headers.encode('utf-8') + body_bytes
 
+def handle_client(client_socket, client_address):
+    thread_name = threading.current_thread().name
+    print(f"\n[{thread_name}] Processing connection from {client_address}")
+    
+    try:
+        method, path, version, headers = parse_http_request(client_socket)
+        print(f"[{thread_name}] SUCCESS: Parsed request for {path}")
+
+        # Routing predefined paths
+        if path == "/hello.server":
+            try:
+                result = subprocess.run(
+                    ["python", "hello.py"], 
+                    capture_output=True, 
+                    text=True, 
+                    check=True
+                )
+                hello_output = result.stdout
+                response_bytes = send_response(version, status_codes[200], "text/plain", hello_output)
+            except Exception as e:
+                error_msg = f"Failed to execute script: {e}"
+                response_bytes = send_response(version, status_codes[500], "text/plain", error_msg)
+
+        elif path == "/slow":
+            # Simulating a slow 5-second task (database query, heavy processing, etc.)
+            print(f"[{thread_name}] Starting slow work (5s delay)...")
+            time.sleep(5)
+            response_bytes = send_response(version, status_codes[200], "text/html", "<h1>Done with slow job!</h1>")
+            print(f"[{thread_name}] Finished slow work!")
+
+        elif path == "/index.html":
+            try:
+                with open("index.html", "r", encoding="utf-8") as f:
+                    html_content = f.read()
+                response_bytes = send_response(version, status_codes[200], "text/html", html_content)
+            except FileNotFoundError:
+                response_bytes = send_response(version, status_codes[404], "text/html", "<h1>404 File Not Found</h1>")
+
+        else:
+            response_bytes = send_response(version, status_codes[404], "text/html", "<h1>404 Page Not Found</h1>")
+
+        # Send response back to this client
+        client_socket.sendall(response_bytes)
+
+    except ValueError as err:
+        print(f"[{thread_name}] VALIDATION FAILED: {err}")
+        err_response = send_response("HTTP/1.1", status_codes[400], "text/html", f"<h1>400 Bad Request</h1><p>{err}</p>")
+        client_socket.sendall(err_response)
+        
+    client_socket.close()
+    print(f"[{thread_name}] Connection closed.")
+
+
+
+
 
 # Runtime listener
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -93,51 +150,15 @@ print("Parsing Engine active on http://127.0.0.1:8080 ...")
 try:
     while True:
         client_socket, client_address = server_socket.accept()
-        print(f"\n[TRAFFIC] Inbound connection from {client_address}")
+        client_thread=threading.Thread(
+            target=handle_client,
+            args=(client_socket, client_address)
+        )
+        client_thread.start()
         
-        try:
-            method, path, version, headers = parse_http_request(client_socket)
-            print(f" SUCCESS: Parsed successfully!")
-            print(f"   -> Method:  {method}")
-            print(f"   -> Path:    {path}")
+        
 
-            # Routing predefined paths
-            if path == "/hello.server":
-                # 2. Run hello.py externally and capture its output!
-                try:
-                    result = subprocess.run(
-                        ["python", "hello.py"], 
-                        capture_output=True, 
-                        text=True, 
-                        check=True
-                    )
-                    hello_output = result.stdout
-                    response_bytes = send_response(version, status_codes[200], "text/plain", hello_output)
-                except Exception as e:
-                    error_msg = f"Failed to execute script: {e}"
-                    response_bytes = send_response(version, status_codes[500], "text/plain", error_msg)
 
-            elif path == "/index.html":
-                # Read directly from index.html file!
-                try:
-                    with open("index.html", "r", encoding="utf-8") as f:
-                        html_content = f.read()
-                    response_bytes = send_response(version,status_codes[200], "text/html", html_content)
-                except FileNotFoundError:
-                    response_bytes = send_response(version, status_codes[404], "text/html", "<h1>404 File Not Found</h1>")
-
-            else:
-                response_bytes = send_response(version,status_codes[404], "text/html", "<h1>404 Page Not Found</h1>")
-
-            # Always send response back to socket
-            client_socket.sendall(response_bytes)
-
-        except ValueError as err:
-            print(f" VALIDATION FAILED: {err}")
-            err_response = send_response(status_codes[400], "text/html", f"<h1>400 Bad Request</h1><p>{err}</p>")
-            client_socket.sendall(err_response)
-            
-        client_socket.close()
 
 except KeyboardInterrupt:
     print("\nShutting down the server cleanly.")
